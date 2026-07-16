@@ -1,43 +1,36 @@
 # quorum
 
-A Raft consensus library implemented from scratch in Rust, built around a deterministic network simulator for testing distributed failure scenarios.
+A Raft implementation I built from scratch in Rust, mostly to actually understand consensus instead of just reading about it. Comes with a deterministic simulator so I could throw dropped packets, delays, and network partitions at it without needing five terminals open.
 
-## Overview
+## Why deterministic simulation
 
-Consensus algorithms are difficult to get right, and even harder to test correctly. Most bugs only surface under specific interleavings of message delays, drops, and partitions that are nearly impossible to reproduce with real networking. This project separates the Raft state machine entirely from I/O, so the exact same core code can be driven either by a real transport in production or by a fully controlled, seeded simulator in tests.
+Distributed systems bugs are miserable to debug because they usually only show up under one specific ordering of events, and that ordering never repeats. So instead of testing over real sockets, the whole thing runs on a fake clock. A driver calls `tick()` and `step()` on each node manually, and a seeded RNG decides which messages get dropped, delayed, or blocked by a partition. Same seed, same run, every time. If something breaks, it breaks the same way twice.
 
-## Architecture
+## How it's structured
 
-The core type, Node, has no knowledge of sockets, threads, or wall-clock time. It exposes exactly two entry points:
+The `Node` itself doesn't know what a socket is. It has two entry points:
 
-- tick() advances the node's internal logical clock by one unit
-- step(from, message) delivers an inbound RPC to the node
+```rust
+node.tick();                    // advance its internal clock by one step
+node.step(from_id, message);    // hand it an incoming RPC
+```
 
-Every outbound message produced by a call to tick() or step() is placed in an outbox, which the driver is responsible for draining and delivering. This inversion of control means the consensus core is completely agnostic to how messages actually travel, whether over TCP in production or through an in-memory scheduler in tests, and is the foundation that makes deterministic simulation possible.
+Anything it wants to send back goes into an outbox, and it's on the caller to actually deliver it — over the network for real usage, or straight into another node's `step()` in the simulator. That's the whole trick: the consensus logic has zero opinion about how bytes move around.
 
-## Simulator
+## What's actually working
 
-Simulator owns a set of nodes and a seeded pseudo-random number generator that controls every non-deterministic aspect of message delivery: drop rate, delay range, and manual partitions between specific node pairs. Two simulation runs given the same seed produce byte-identical outcomes, the same elections, the same drops, the same final state, which turns an intermittent CI failure into a reproducible, debuggable test case.
+- Leader election, with timeouts that get re-rolled after every failed attempt (without this, nodes with the same base timeout can split-vote forever — found that out the hard way)
+- Log replication, including truncating conflicting entries when a follower's log disagrees with the leader's
+- Commit indexing based on majority acknowledgement
+- Partitions — a minority side just can't make progress, majority side keeps going
+- Recovering cleanly when a leader dies
 
-## Implemented
+## Running tests
+cargo test
 
-- Leader election with randomized timeouts, re-rolled on every election attempt, so nodes sharing an identical base timeout do not deadlock in a repeated split vote
-- Log replication with conflict detection and truncation on divergent entries
-- Majority-based commit indexing
-- Partition tolerance: a minority partition cannot make progress, while the majority side continues to elect leaders and commit entries
-- Leader crash recovery
+`tests/election.rs` is the boring stuff — does it elect a leader, does it replicate. `tests/edge_cases.rs` is where it gets more interesting: leader crashes mid-cluster, nodes with identical timeouts, and reconciling logs after a partition heals.
 
-## Testing
-
-Run the test suite with cargo test.
-
-tests/election.rs covers baseline election and replication behavior. tests/edge_cases.rs covers harder scenarios: leader crash recovery, resistance to split-vote livelock under identical timeouts, and log reconciliation after a healed network partition.
-
-### A bug the simulator caught
-
-The partition-heal test surfaced a real correctness bug during development: an isolated leader could locally mark a write as committed without it ever being replicated to any other node. The cause was that match-index tracking used the leader's own log length rather than the index a follower's reply actually confirmed. A stale reply sent before the partition, delivered only after it healed, was enough to trigger it.
-
-The fix was to have AppendEntriesReply carry the follower's actual replicated index explicitly, and to have the leader trust only that value when advancing match_index, never regressing it on delayed or out-of-order replies.
+That last one actually caught a real bug. An isolated leader was locally marking a write as committed even though it had zero confirmation any other node had it. Turned out the leader was tracking replication progress using its own log length instead of what the follower's reply actually said it had received — so a delayed reply from before the partition was enough to trick it into thinking it had quorum. Fixed by making the follower explicitly report back the index it actually applied, and having the leader only ever move that number forward, never backward.
 
 ## License
 
