@@ -4,18 +4,16 @@ A Raft implementation I built from scratch in Rust, mostly to actually understan
 
 ## Why deterministic simulation 🧪
 
-Distributed systems bugs are miserable to debug because they usually only show up under one specific ordering of events, and that ordering never repeats. So instead of testing over real sockets, the whole thing runs on a fake clock. A driver calls `tick()` and `step()` on each node manually, and a seeded RNG decides which messages get dropped, delayed, or blocked by a partition. Same seed, same run, every time. If something breaks, it breaks the same way twice.
+Distributed systems bugs are miserable to debug because they usually only show up under one specific ordering of events, and that ordering never repeats. So instead of testing over real sockets, the whole thing runs on a fake clock. A driver calls tick() and step() on each node manually, and a seeded RNG decides which messages get dropped, delayed, or blocked by a partition. Same seed, same run, every time. If something breaks, it breaks the same way twice.
 
 ## How it's structured 🏗️
 
-The `Node` itself doesn't know what a socket is. It has two entry points:
+The Node itself doesn't know what a socket is. It has two entry points:
 
-```rust
-node.tick();                    // advance its internal clock by one step
-node.step(from_id, message);    // hand it an incoming RPC
-```
+    node.tick();                    // advance its internal clock by one step
+    node.step(from_id, message);    // hand it an incoming RPC
 
-Anything it wants to send back goes into an outbox, and it's on the caller to actually deliver it — over the network for real usage, or straight into another node's `step()` in the simulator. That's the whole trick: the consensus logic has zero opinion about how bytes move around.
+Anything it wants to send back goes into an outbox, and it's on the caller to actually deliver it — over the network for real usage, or straight into another node's step() in the simulator. That's the whole trick: the consensus logic has zero opinion about how bytes move around.
 
 ## What's actually working ✅
 
@@ -25,9 +23,13 @@ Anything it wants to send back goes into an outbox, and it's on the caller to ac
 - Partitions — a minority side just can't make progress, majority side keeps going
 - Recovering cleanly when a leader dies
 
-## Running tests 🧵cargo test
+## Running tests 🧵
 
-`tests/election.rs` is the boring stuff — does it elect a leader, does it replicate. `tests/edge_cases.rs` is where it gets more interesting: leader crashes mid-cluster, nodes with identical timeouts, and reconciling logs after a partition heals.
+Run the suite with:
+
+    cargo test
+
+tests/election.rs is the boring stuff — does it elect a leader, does it replicate. tests/edge_cases.rs is where it gets more interesting: leader crashes mid-cluster, nodes with identical timeouts, and reconciling logs after a partition heals.
 
 That last one actually caught a real bug 🐛. An isolated leader was locally marking a write as committed even though it had zero confirmation any other node had it. Turned out the leader was tracking replication progress using its own log length instead of what the follower's reply actually said it had received — so a delayed reply from before the partition was enough to trick it into thinking it had quorum. Fixed by making the follower explicitly report back the index it actually applied, and having the leader only ever move that number forward, never backward.
 
