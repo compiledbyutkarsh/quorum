@@ -32,7 +32,3 @@ Run the suite with:
 tests/election.rs is the boring stuff — does it elect a leader, does it replicate. tests/edge_cases.rs is where it gets more interesting: leader crashes mid-cluster, nodes with identical timeouts, and reconciling logs after a partition heals.
 
 That last one actually caught a real bug 🐛. An isolated leader was locally marking a write as committed even though it had zero confirmation any other node had it. Turned out the leader was tracking replication progress using its own log length instead of what the follower's reply actually said it had received — so a delayed reply from before the partition was enough to trick it into thinking it had quorum. Fixed by making the follower explicitly report back the index it actually applied, and having the leader only ever move that number forward, never backward.
-
-## License 📄
-
-MIT
