@@ -1,4 +1,4 @@
-# quorum
+# quorum 🗳️
 
 A Raft consensus library written from scratch in Rust, with a deterministic
 network simulator for testing distributed failure scenarios.
